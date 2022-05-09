@@ -189,7 +189,7 @@ class Milvus:
         :raises MilvusException: If the return result from server is not ok
         """
         with self._connection() as handler:
-            return handler.load_collection(collection_name=collection_name, timeout=timeout, **kwargs)
+            return handler.load_collection(collection_name=collection_name, timeout=timeout, replica_number=replica_number, **kwargs)
 
     def release_collection(self, collection_name, timeout=None):
         """
@@ -904,10 +904,22 @@ class Milvus:
             return handler.get_query_segment_info(collection_name, timeout, **kwargs)
 
     def load_collection_progress(self, collection_name, timeout=None):
+        """ {
+            'loading_progress': '100%',
+            'num_loaded_partitions': 3,
+            'not_loaded_partitions': [],
+        }
+        """
         with self._connection() as handler:
             return handler.load_collection_progress(collection_name, timeout=timeout)
 
     def load_partitions_progress(self, collection_name, partition_names, timeout=None):
+        """ {
+            'loading_progress': '100%',
+            'num_loaded_partitions': 3,
+            'not_loaded_partitions': [],
+        }
+        """
         with self._connection() as handler:
             return handler.load_partitions_progress(collection_name, partition_names, timeout=timeout)
 
@@ -1078,7 +1090,7 @@ class Milvus:
         with self._connection() as handler:
             return handler.get_replicas(collection_name, timeout, **kwargs)
 
-    def bulk_load(self, collection_name: str, partition_name: str, channel_names: list, is_row_based: bool, files: list, timeout=None, **kwargs) -> list:
+    def bulk_load(self, collection_name: str, partition_name: str, is_row_based: bool, files: list, timeout=None, **kwargs) -> list:
         """ bulk load entities through files
 
         :param collection_name: the name of the collection
@@ -1086,9 +1098,6 @@ class Milvus:
 
         :param partition_name: the name of the partition
         :type  partition_name: str
-
-        :param channel_names: the target channel names of the imported collection
-        :type  channel_names: list[str]
 
         :param is_row_based: indicate whether the files are row-based or coloumn based.
         :type  is_row_based: bool
@@ -1107,7 +1116,7 @@ class Milvus:
         :raises MilvusException: If collection_name doesn't exist.
         """
         with self._connection() as handler:
-            return handler.bulk_load(collection_name, partition_name, channel_names, is_row_based, files, timeout=timeout, **kwargs)
+            return handler.bulk_load(collection_name, partition_name, is_row_based, files, timeout=timeout, **kwargs)
 
     def get_bulk_load_state(self, task_id, timeout=None, **kwargs) -> BulkLoadState:
         """get bulk load state returns state of a certain task_id
@@ -1120,6 +1129,16 @@ class Milvus:
         """
         with self._connection() as handler:
             return handler.get_bulk_load_state(task_id, timeout=timeout, **kwargs)
+
+    def list_bulk_load_tasks(self, timeout=None, **kwargs) -> list:
+        """list_bulk_load_tasks lists all bulk load tasks
+
+        :return: list[BulkLoadState]
+        :rtype:  list[BulkLoadState]
+
+        """
+        with self._connection() as handler:
+            return handler.list_bulk_load_tasks(timeout=timeout, **kwargs)
 
     def create_credential(self, user, password, timeout=None, **kwargs):
         """ Create credential using the given user and password.

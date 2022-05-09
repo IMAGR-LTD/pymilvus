@@ -173,7 +173,7 @@ def loading_progress(collection_name, partition_names=None, using="default"):
     :type  partition_names: str list
 
     :return dict:
-        {'load_progress': 100%}
+        {'loading_progress': '100%', 'num_loaded_partitions': 3, 'not_loaded_partitions': []}
     :raises PartitionNotExistException: If partition doesn't exist.
     :example:
         >>> from pymilvus import Collection, FieldSchema, CollectionSchema, DataType, connections, utility
@@ -194,11 +194,9 @@ def loading_progress(collection_name, partition_names=None, using="default"):
         >>> collection.create_index("films", {"index_type": "IVF_FLAT", "params": {"nlist": 8}, "metric_type": "L2"})
         >>> collection.load(_async=True)
         >>> utility.loading_progress("test_loading_progress")
-        {'loading_progress': '100%'}
+        {'loading_progress': '100%', 'num_loaded_partitions': 1, 'not_loaded_partitions': []}
     """
-    if not partition_names or len(partition_names) == 0:
-        return _get_connection(using).load_collection_progress(collection_name)
-    return _get_connection(using).load_partitions_progress(collection_name, partition_names)
+    return _get_connection(using).general_loading_progress(collection_name, partition_names)
 
 
 def wait_for_loading_complete(collection_name, partition_names=None, timeout=None, using="default"):
@@ -710,7 +708,7 @@ def list_aliases(collection_name: str, timeout=None, using="default"):
     pass
 
 
-def bulk_load(collection_name: str, partition_name: str, channel_names: list, is_row_based: bool, files: list, timeout=None, using="default", **kwargs) -> list:
+def bulk_load(collection_name: str, partition_name: str, is_row_based: bool, files: list, timeout=None, using="default", **kwargs) -> list:
         """ bulk load entities through files
 
         :param collection_name: the name of the collection
@@ -718,9 +716,6 @@ def bulk_load(collection_name: str, partition_name: str, channel_names: list, is
 
         :param partition_name: the name of the partition
         :type  partition_name: str
-
-        :param channel_names: the target channel names of the imported collection
-        :type  channel_names: list[str]
 
         :param is_row_based: indicate whether the files are row-based or coloumn based.
         :type  is_row_based: bool
@@ -738,7 +733,7 @@ def bulk_load(collection_name: str, partition_name: str, channel_names: list, is
 
         :raises BaseException: If collection_name doesn't exist.
         """
-        return _get_connection(using).bulk_load(collection_name, partition_name, channel_names, is_row_based, files, timeout=timeout, **kwargs)
+        return _get_connection(using).bulk_load(collection_name, partition_name, is_row_based, files, timeout=timeout, **kwargs)
 
 
 def get_bulk_load_state(task_id, timeout=None, using="default", **kwargs) -> BulkLoadState:
@@ -751,6 +746,16 @@ def get_bulk_load_state(task_id, timeout=None, using="default", **kwargs) -> Bul
     :rtype:  BulkLoadState
     """
     return _get_connection(using).get_bulk_load_state(task_id, timeout=timeout, **kwargs)
+
+
+def list_bulk_load_tasks(timeout=None, using="default", **kwargs) -> list:
+    """list_bulk_load_tasks lists all bulk load tasks
+
+    :return: list[BulkLoadState]
+    :rtype:  list[BulkLoadState]
+
+    """
+    return _get_connection(using).list_bulk_load_tasks(timeout=timeout, **kwargs)
 
 
 def reset_password(user: str, old_password: str, new_password: str, using="default"):

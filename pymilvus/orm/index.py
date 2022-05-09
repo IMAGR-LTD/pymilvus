@@ -66,12 +66,14 @@ class Index:
         self._collection = collection
         self._field_name = field_name
         self._index_params = index_params
+        index_name = kwargs.get("index_name", DefaultConfigs.IndexName)
+        self._index_name = index_name
         self._kwargs = kwargs
         if self._kwargs.pop("construct_only", False):
             return
 
         conn = self._get_connection()
-        index = conn.describe_index(self._collection.name, "")
+        index = conn.describe_index(self._collection.name, index_name)
         if index is not None:
             tmp_field_name = index.pop("field_name", None)
         if index is None or index != index_params or tmp_field_name != field_name:
@@ -112,6 +114,16 @@ class Index:
         """
         return self._field_name
 
+    @property
+    def index_name(self) -> str:
+        """
+        Returns the corresponding field name.
+
+        :return str:
+            The corresponding field name.
+        """
+        return self._index_name
+
     def __eq__(self, other) -> bool:
         """
         The order of the fields of index must be consistent.
@@ -125,6 +137,7 @@ class Index:
         _dict = {
             "collection": self._collection._name,
             "field": self._field_name,
+            "index_name": self._index_name,
             "index_param": self.params
         }
         return _dict

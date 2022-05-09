@@ -10,6 +10,7 @@ from grpc._cython import cygrpc
 
 from ..grpc_gen import milvus_pb2_grpc
 from ..grpc_gen import milvus_pb2 as milvus_types
+from ..grpc_gen import common_pb2
 
 from .abstract import CollectionSchema, ChunkedQueryResult, MutationResult
 from .check import (
@@ -82,6 +83,10 @@ class GrpcHandler:
         self._max_retry = kwargs.get("max_retry", 5)
 
         self._secure = kwargs.get("secure", False)
+        self._client_pem_path = kwargs.get("client_pem_path", "")
+        self._client_key_path = kwargs.get("client_key_path", "")
+        self._ca_pem_path = kwargs.get("ca_pem_path", "")
+        self._server_name = kwargs.get("server_name", "")
         self._authorization_interceptor = None
         self._setup_authorization_interceptor(kwargs.get("user", None), kwargs.get("password", None))
         self._setup_grpc_channel()
@@ -123,14 +128,28 @@ class GrpcHandler:
                              ('grpc.keepalive_time_ms', 55000)]
                 )
             else:
-                creds = grpc.ssl_channel_credentials(root_certificates=None, private_key=None, certificate_chain=None)
+                opts = [(cygrpc.ChannelArgKey.max_send_message_length, -1),
+                        (cygrpc.ChannelArgKey.max_receive_message_length, -1),
+                        ('grpc.enable_retries', 1),
+                        ('grpc.keepalive_time_ms', 55000)]
+                if self._client_pem_path != "" and self._client_key_path != "" and self._ca_pem_path != "" \
+                        and self._server_name != "":
+                    opts.append(('grpc.ssl_target_name_override', self._server_name, ),)
+                    with open(self._client_pem_path, 'rb') as f:
+                        certificate_chain = f.read()
+                    with open(self._client_key_path, 'rb') as f:
+                        private_key = f.read()
+                    with open(self._ca_pem_path, 'rb') as f:
+                        root_certificates = f.read()
+                    creds = grpc.ssl_channel_credentials(root_certificates, private_key, certificate_chain)
+
+                else:
+                    creds = grpc.ssl_channel_credentials(root_certificates=None, private_key=None,
+                                                         certificate_chain=None)
                 self._channel = grpc.secure_channel(
                     self._uri,
                     creds,
-                    options=[(cygrpc.ChannelArgKey.max_send_message_length, -1),
-                             (cygrpc.ChannelArgKey.max_receive_message_length, -1),
-                             ('grpc.enable_retries', 1),
-                             ('grpc.keepalive_time_ms', 55000)]
+                    options=opts
                 )
         # avoid to add duplicate headers.
         self._final_channel = self._channel
@@ -184,10 +203,9 @@ class GrpcHandler:
     def has_collection(self, collection_name, timeout=None, **kwargs):
         check_pass_param(collection_name=collection_name)
         request = Prepare.has_collection_request(collection_name)
-
-        rf = self._stub.HasCollection.future(request, wait_for_ready=True, timeout=timeout)
+        rf = self._stub.HasCollection.future(request, timeout=timeout)
         reply = rf.result()
-        if reply.status.error_code == 0:
+        if reply.status.error_code == common_pb2.Success:
             return reply.value
 
         raise MilvusException(reply.status.error_code, reply.status.reason)
@@ -632,6 +650,21 @@ class GrpcHandler:
 
     @retry_on_rpc_failure(retry_times=10, wait=1)
     @error_handler
+    def describe_indexes(self, collection_name, timeout=None, **kwargs):
+        check_pass_param(collection_name=collection_name)
+        request = Prepare.describe_index_request(collection_name, "")
+
+        rf = self._stub.DescribeIndex.future(request, wait_for_ready=True, timeout=timeout)
+        response = rf.result()
+        status = response.status
+        if status.error_code == 0:
+            return response.index_descriptions
+        if status.error_code == Status.INDEX_NOT_EXIST:
+            return []
+        raise MilvusException(status.error_code, status.reason)
+
+    @retry_on_rpc_failure(retry_times=10, wait=1)
+    @error_handler
     def describe_index(self, collection_name, index_name, timeout=None, **kwargs):
         check_pass_param(collection_name=collection_name)
         request = Prepare.describe_index_request(collection_name, index_name)
@@ -703,10 +736,7 @@ class GrpcHandler:
     @error_handler
     def load_collection_progress(self, collection_name, timeout=None):
         """ Return loading progress of collection """
-
-        progress = self.get_collection_loading_progress(collection_name, timeout)
-
-        return {'loading_progress': f"{progress:.0f}%"}
+        return self.general_loading_progress(collection_name, timeout=timeout)
 
     @retry_on_rpc_failure(retry_times=10, wait=1)
     @error_handler
@@ -824,41 +854,38 @@ class GrpcHandler:
 
             time.sleep(DefaultConfigs.WaitTimeDurationWhenLoad)
 
-    @retry_on_rpc_failure(retry_times=10, wait=1)
     @error_handler
-    def load_partitions_progress(self, collection_name, partition_names, timeout=None):
-        """ Return loading progress of partitions """
-        request = Prepare.show_partitions_request(collection_name)
+    def general_loading_progress(self, collection_name, partition_names=None, timeout=None):
+        request = Prepare.show_partitions_request(collection_name, type_in_memory=True)
         rf = self._stub.ShowPartitions.future(request, wait_for_ready=True, timeout=timeout)
         response = rf.result()
         status = response.status
         if status.error_code != 0:
             raise MilvusException(status.error_code, status.reason)
 
-        pIDs = []
-        pNames = []
-        for index, p_name in enumerate(response.partition_names):
-            if p_name in partition_names:
-                pIDs.append(response.partitionIDs[index])
-                pNames.append((p_name))
+        target_p_names = partition_names if partition_names is not None else self.list_partitions(collection_name)
 
-        # all partition names must be valid, otherwise throw exception
-        for name in partition_names:
-            if name not in pNames:
-                msg = "partitionID of partitionName:" + name + " can not be found"
-                raise MilvusException(1, msg)
+        all_names = response.partition_names
+        loaded_p_names = []
+        unloaded_p_names = []
 
-        total_segments_nums = sum(info.num_rows for info in
-                                  self.get_persistent_segment_infos(collection_name, timeout)
-                                  if info.partitionID in pIDs)
+        for p in target_p_names:
+            if p in all_names and response.inMemory_percentages[list(all_names).index(p)] == 100:
+                loaded_p_names.append(p)
+            else:
+                unloaded_p_names.append(p)
 
-        loaded_segments_nums = sum(info.num_rows for info in
-                                   self.get_query_segment_info(collection_name, timeout)
-                                   if info.partitionID in pIDs)
+        return {
+            "loading_progress": f"{len(loaded_p_names)*100/len(target_p_names):.0f}%",
+            "num_loaded_partitions": len(loaded_p_names),
+            "not_loaded_partitions": unloaded_p_names,
+        }
 
-        progress = (loaded_segments_nums / total_segments_nums) * 100 if loaded_segments_nums < total_segments_nums else 100
-
-        return {'loading_progress': f"{progress:.0f}%"}
+    @retry_on_rpc_failure(retry_times=10, wait=1)
+    @error_handler
+    def load_partitions_progress(self, collection_name, partition_names, timeout=None):
+        """ Return loading progress of partitions """
+        return self.general_loading_progress(collection_name, partition_names, timeout)
 
     @retry_on_rpc_failure(retry_times=10, wait=1)
     @error_handler
@@ -1163,14 +1190,14 @@ class GrpcHandler:
         groups = []
         for replica in response.replicas:
             shards = [Shard(s.dm_channel_name, s.node_ids, s.leaderID) for s in replica.shard_replicas]
-            groups.append(Group(replica.replicaID, shards))
+            groups.append(Group(replica.replicaID, shards, replica.node_ids))
 
         return Replica(groups)
 
     @retry_on_rpc_failure(retry_times=10, wait=1)
     @error_handler
-    def bulk_load(self, collection_name, partition_name, channel_names: list, is_row_based: bool, files: list, timeout=None, **kwargs) -> list:
-        req = Prepare.bulk_load(collection_name, partition_name, channel_names, is_row_based, files, **kwargs)
+    def bulk_load(self, collection_name, partition_name, is_row_based: bool, files: list, timeout=None, **kwargs) -> list:
+        req = Prepare.bulk_load(collection_name, partition_name, is_row_based, files, **kwargs)
         future = self._stub.Import.future(req, wait_for_ready=True, timeout=timeout)
         response = future.result()
         if response.status.error_code != 0:
@@ -1178,7 +1205,7 @@ class GrpcHandler:
         return response.tasks
 
     @error_handler
-    def get_bulk_load_state(self, task_id, timeout=None, **kwargs) -> list:
+    def get_bulk_load_state(self, task_id, timeout=None, **kwargs) -> BulkLoadState:
         req = Prepare.get_import_state(task_id)
         future = self._stub.GetImportState.future(req, wait_for_ready=True, timeout=timeout)
         resp = future.result()
@@ -1186,6 +1213,19 @@ class GrpcHandler:
             raise MilvusException(resp.status.error_code, resp.status.reason)
         state = BulkLoadState(task_id, resp.state, resp.row_count, resp.id_list, resp.infos)
         return state
+
+    @retry_on_rpc_failure(retry_times=10, wait=1)
+    @error_handler
+    def list_bulk_load_tasks(self, timeout=None, **kwargs) -> list:
+        req = Prepare.list_import_tasks()
+        future = self._stub.ListImportTasks.future(req, wait_for_ready=True, timeout=timeout)
+        resp = future.result()
+        if resp.status.error_code != 0:
+            raise MilvusException(resp.status.error_code, resp.status.reason)
+
+        tasks = [BulkLoadState(t.id, t.state, t.row_count, t.id_list, t.infos)
+                 for t in resp.tasks]
+        return tasks
 
     @retry_on_rpc_failure(retry_times=10, wait=1)
     @error_handler

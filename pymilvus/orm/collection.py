@@ -12,6 +12,7 @@
 
 import copy
 import pandas
+import json
 
 from .connections import connections
 from .schema import (
@@ -36,10 +37,13 @@ from ..exceptions import (
     ExceptionsMessage,
 )
 from .future import SearchFuture, MutationFuture
+from .utility import _get_connection
+from .default_config import DefaultConfig
 from ..client.types import CompactionState, CompactionPlans, Replica
 from ..client.types import get_consistency_level
 from ..client.constants import DEFAULT_CONSISTENCY_LEVEL
 from ..client.configs import DefaultConfigs
+
 
 
 def _check_schema(schema):
@@ -215,17 +219,28 @@ class Collection:
             else:
                 raise SchemaNotReadyException(0, ExceptionsMessage.AutoIDWithData)
 
-        fields = parse_fields_from_data(dataframe)
-        if auto_id:
-            fields.insert(pk_index, FieldSchema(name=primary_field, dtype=DataType.INT64, is_primary=True, auto_id=True,
-                                                **kwargs))
+        using = kwargs.get("using", DefaultConfig.DEFAULT_USING)
+        conn = _get_connection(using)
+        if conn.has_collection(name):
+            resp = conn.describe_collection(name)
+            server_schema = CollectionSchema.construct_from_dict(resp)
+            schema = server_schema
         else:
-            for field in fields:
-                if field.name == primary_field:
+            fields_schema = parse_fields_from_data(dataframe)
+            if auto_id:
+                fields_schema.insert(pk_index,
+                                     FieldSchema(name=primary_field, dtype=DataType.INT64, is_primary=True,
+                                                 auto_id=True,
+                                                 **kwargs))
+
+            for field in fields_schema:
+                if auto_id is False and field.name == primary_field:
                     field.is_primary = True
                     field.auto_id = False
+                if field.dtype == DataType.VARCHAR:
+                    field.params[DefaultConfigs.MaxVarCharLengthKey] = int(DefaultConfigs.MaxVarCharLength)
+            schema = CollectionSchema(fields=fields_schema)
 
-        schema = CollectionSchema(fields=fields)
         _check_schema(schema)
         collection = cls(name, schema, **kwargs)
         res = collection.insert(data=dataframe)
@@ -397,7 +412,7 @@ class Collection:
         conn = self._get_connection()
         indexes = self.indexes
         for index in indexes:
-            index.drop(timeout=timeout, **kwargs)
+            index.drop(timeout=timeout, index_name=index.index_name, **kwargs)
         conn.drop_collection(self._name, timeout=timeout, **kwargs)
 
     def load(self, partition_names=None, replica_number=1, timeout=None, **kwargs):
@@ -938,10 +953,13 @@ class Collection:
         """
         conn = self._get_connection()
         indexes = []
-        tmp_index = conn.describe_index(self._name, "")
-        if tmp_index is not None:
-            field_name = tmp_index.pop("field_name", None)
-            indexes.append(Index(self, field_name, tmp_index, construct_only=True))
+        tmp_index = conn.describe_indexes(self._name)
+        for index in tmp_index:
+            if index is not None:
+                info_dict = {kv.key: kv.value for kv in index.params}
+                if info_dict.get("params", None):
+                    info_dict["params"] = json.loads(info_dict["params"])
+                indexes.append(Index(self, index.field_name, info_dict, index_name=index.index_name, construct_only=True))
         return indexes
 
     def index(self, **kwargs) -> Index:

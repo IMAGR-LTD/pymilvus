@@ -97,11 +97,20 @@ class Prepare:
                 type_params = field.get('params')
                 if isinstance(type_params, dict):
                     for tk, tv in type_params.items():
-                        if tk in ["dim", "max_length_per_row"]:
+                        if tk in ["dim",]:
                             try:
                                 int(tv)
                             except (TypeError, ValueError):
-                                raise ParamError("invalid" + str(tk) + str(tv)) from None
+                                raise ParamError(f"invalid {tk}: {tv}") from None
+                        if tk in [DefaultConfigs.MaxVarCharLengthKey,]:
+                            try:
+                                max_len = int(tv)
+                                if max_len > DefaultConfigs.MaxVarCharLength:
+                                    raise ParamError(f"{tk} {max_len} exceeds {DefaultConfigs.MaxVarCharLength}")
+                            except (TypeError, ValueError):
+                                raise ParamError(f"invalid {tk}: {tv}") from None
+                            except ParamError as e:
+                                raise e from None
                         kv_pair = common_types.KeyValuePair(key=str(tk), value=str(tv))
                         field_schema.type_params.append(kv_pair)
 
@@ -170,7 +179,7 @@ class Prepare:
         return milvus_types.PartitionStatsRequest(collection_name=collection_name, partition_name=partition_name)
 
     @classmethod
-    def show_partitions_request(cls, collection_name, partition_names=None):
+    def show_partitions_request(cls, collection_name, partition_names=None, type_in_memory=False):
         check_pass_param(collection_name=collection_name)
         req = milvus_types.ShowPartitionsRequest(collection_name=collection_name)
         if partition_names:
@@ -179,6 +188,8 @@ class Prepare:
             for partition_name in partition_names:
                 check_pass_param(partition_name=partition_name)
             req.partition_names.extend(partition_names)
+            req.type = milvus_types.ShowType.InMemory
+        if type_in_memory:
             req.type = milvus_types.ShowType.InMemory
         return req
 
@@ -880,14 +891,16 @@ class Prepare:
         return request
 
     @classmethod
-    def bulk_load(cls, collection_name: str, partition_name: str, channel_names: list, is_row_based: bool, files: list, **kwargs):
+    def bulk_load(cls, collection_name: str, partition_name: str, is_row_based: bool, files: list, **kwargs):
+        channel_names = kwargs.get("channel_names", None)
         req = milvus_types.ImportRequest(
             collection_name=collection_name,
             partition_name=partition_name,
-            channel_names=channel_names,
             row_based=is_row_based,
             files=files,
         )
+        if channel_names is not None:
+            req.channel_names.extend(channel_names)
 
         for k, v in kwargs.items():
             if k in ("bucket",):
@@ -900,6 +913,10 @@ class Prepare:
     def get_import_state(cls, task_id):
         req = milvus_types.GetImportStateRequest(task=task_id)
         return req
+
+    @classmethod
+    def list_import_tasks(cls):
+        return milvus_types.ListImportTasksRequest()
 
     @classmethod
     def create_credential_request(cls, user, password):

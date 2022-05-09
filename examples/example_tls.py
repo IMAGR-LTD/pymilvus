@@ -22,11 +22,9 @@ _PORT = '19530'
 _COLLECTION_NAME = 'demo'
 _ID_FIELD_NAME = 'id_field'
 _VECTOR_FIELD_NAME = 'float_vector_field'
-_STR_FIELD_NAME = "str_field"
-_MAX_LENGTH_PER_ROW = 65535
 
 # Vector parameters
-_DIM = 8
+_DIM = 128
 _INDEX_FILE_SIZE = 32  # max file size of stored index
 
 # Index parameters
@@ -40,19 +38,19 @@ _TOPK = 3
 # Create a Milvus connection
 def create_connection():
     print(f"\nCreate connection...")
-    connections.connect(host=_HOST, port=_PORT)
+    connections.connect(host=_HOST, port=_PORT, secure=True, client_pem_path="cert/client.pem",
+                        client_key_path="cert/client.key",
+                        ca_pem_path="cert/ca.pem", server_name="localhost")
     print(f"\nList connections:")
     print(connections.list_connections())
 
 
 # Create a collection named 'demo'
-def create_collection(name, id_field, vector_field, str_field):
+def create_collection(name, id_field, vector_field):
     field1 = FieldSchema(name=id_field, dtype=DataType.INT64, description="int64", is_primary=True)
     field2 = FieldSchema(name=vector_field, dtype=DataType.FLOAT_VECTOR, description="float vector", dim=_DIM,
                          is_primary=False)
-    field3 = FieldSchema(name=str_field, dtype=DataType.VARCHAR, description="string",
-                         max_length_per_row=_MAX_LENGTH_PER_ROW, is_primary=False)
-    schema = CollectionSchema(fields=[field1, field2, field3], description="collection description")
+    schema = CollectionSchema(fields=[field1, field2], description="collection description")
     collection = Collection(name=name, data=None, schema=schema)
     print("\ncollection created:", name)
     return collection
@@ -77,9 +75,8 @@ def list_collections():
 
 def insert(collection, num, dim):
     data = [
-        [i for i in range(num)],                                        # id field
-        [[random.random() for _ in range(dim)] for _ in range(num)],    # vector field
-        [str(random.random()) for _ in range(num)],                     # string field
+        [i for i in range(num)],
+        [[random.random() for _ in range(dim)] for _ in range(num)],
     ]
     collection.insert(data)
     return data[1]
@@ -135,13 +132,13 @@ def main():
         drop_collection(_COLLECTION_NAME)
 
     # create collection
-    collection = create_collection(_COLLECTION_NAME, _ID_FIELD_NAME, _VECTOR_FIELD_NAME, _STR_FIELD_NAME)
+    collection = create_collection(_COLLECTION_NAME, _ID_FIELD_NAME, _VECTOR_FIELD_NAME)
 
     # show collections
     list_collections()
 
     # insert 10000 vectors with 128 dimension
-    vectors = insert(collection, 10, _DIM)
+    vectors = insert(collection, 10000, _DIM)
 
     # get the number of entities
     get_entity_num(collection)
